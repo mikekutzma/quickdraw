@@ -12,13 +12,14 @@ import keras
 import keras_preprocessing.image as KPImage
 from PIL import Image
 import pydicom
-from keras.applications.resnet50 import ResNet50 as PTModel, preprocess_input
-from keras.layers import (Input, BatchNormalization, GlobalAveragePooling2D,
-                          Dropout, Dense)
+#from keras.applications.resnet50 import ResNet50 as PTModel, preprocess_input
+from keras import layers
 from keras.models import Model, Sequential
 from keras.optimizers import Adam
-from keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
+from keras.callbacks import (ModelCheckpoint, EarlyStopping, ReduceLROnPlateau,
+                             TensorBoard)
 from skimage.transform import downscale_local_mean
+from keras.metrics import top_k_categorical_accuracy
 
 # Load data 
 print('Loading Data..')
@@ -44,9 +45,10 @@ class NumpyPIL:
     @staticmethod
     def open(infile):
         if infile.endswith('.npy'):
-            np_arr = downscale_local_mean(np.load(infile),(32,32))
-            int_slice = (255 * np_arr).clip(0, 255).astype(np.uint8)
-            return Image.fromarray(int_slice)
+            np_arr = np.load(infile)
+            inshape = np_arr.shape
+            #np_arr = np_arr.reshape(inshape[0],inshape[1],1).astype('float32')
+            return Image.fromarray(np_arr,'L')
         return Image.open(infile)
 
     fromarray = Image.fromarray
@@ -54,15 +56,15 @@ class NumpyPIL:
 
 KPImage.pil_image = NumpyPIL
 
+
 # Prepare datasets
 print('Preparing Data..')
-img_gen_params = dict(horizontal_flip=True,
+img_gen_params = dict(vertical_flip=True,
                       height_shift_range=0.05,
                       width_shift_range=0.02,
                       rotation_range=3.0,
-                      shear_range=0.01,
                       zoom_range=0.05,
-                      preprocessing_function=preprocess_input
+                      #preprocessing_function=preprocess_input
                       )
 img_gen = KPImage.ImageDataGenerator(**img_gen_params)
 
@@ -90,7 +92,7 @@ train_gen = flow_from_dataframe(img_gen, train_df,
                                 path_col='path',
                                 y_col='class_vec',
                                 target_size=params['IMG_SIZE'],
-                                color_mode='rgb',
+                                color_mode='grayscale',
                                 batch_size=params['BATCH_SIZE'])
 # For validation
 print('Building Val Gen')
@@ -98,15 +100,15 @@ val_gen = flow_from_dataframe(img_gen, val_df,
                               path_col='path',
                               y_col='class_vec',
                               target_size=params['IMG_SIZE'],
-                              color_mode='rgb',
-                              batch_size=256)
+                              color_mode='grayscale',
+                              batch_size=params['BATCH_SIZE'])
 # For test
 print('Building Test set')
 valid_X, valid_Y = next(flow_from_dataframe(img_gen, val_df,
                                             path_col='path',
                                             y_col='class_vec',
                                             target_size=params['IMG_SIZE'],
-                                            color_mode='rgb',
+                                            color_mode='grayscale',
                                             batch_size=params['TEST_SIZE']))
 
 # Build model
@@ -114,36 +116,37 @@ print('Building Model Structure..')
 t_x, t_y = next(train_gen)
 
 # Base
-print(t_x.shape[1:])
-base_model = PTModel(input_shape=t_x.shape[1:], include_top=False)
-base_model.trainable = False
+model = Sequential()
+model.add(layers.Convolution2D(16,(3,3), padding='same', activation='relu',
+    input_shape=t_x.shape[1:]))
+model.add(layers.MaxPooling2D(pool_size=(2, 2)))
+model.add(layers.Convolution2D(32, (3, 3), padding='same', activation= 'relu'))
+model.add(layers.MaxPooling2D(pool_size=(2, 2)))
+model.add(layers.Convolution2D(64, (3, 3), padding='same', activation= 'relu'))
+model.add(layers.MaxPooling2D(pool_size =(2,2)))
+model.add(layers.Convolution2D(128, (3, 3), padding='same', activation= 'relu'))
+model.add(layers.MaxPooling2D(pool_size =(2,2)))
+model.add(layers.Convolution2D(256, (3, 3), padding='same', activation= 'relu'))
+model.add(layers.MaxPooling2D(pool_size =(2,2)))
+model.add(layers.Flatten())
+model.add(layers.Dense(512, activation='relu'))
+model.add(layers.Dense(t_y.shape[1], activation='softmax')) 
 
-# Attentional
-base_shape = base_model.get_output_shape_at(0)[1:]
-layers = [Input(base_shape, name='feature_input')]
-layers.append(BatchNormalization()(layers[-1]))
-layers.append(GlobalAveragePooling2D()(layers[-1]))
-layers.append(Dropout(params['DROPOUT'])(layers[-1]))
-layers.append(Dense(params['DENSE_COUNT'], activation='elu')(layers[-1]))
-layers.append(Dropout(params['DROPOUT'])(layers[-1]))
-layers.append(Dense(t_y.shape[1], activation='softmax')(layers[-1]))
-attn_model = Model(inputs=[layers[0]], outputs=[layers[-1]],
-                   name='trained_model')
 
-# Stitch Models Together
-model = Sequential(name='combined_model')
-model.add(base_model)
-model.add(attn_model)
+def top_3_categorical_accuracy(y_true, y_pred):
+    return top_k_categorical_accuracy(y_true,y_pred,k=3)
+
 model.compile(optimizer=Adam(lr=params['LEARNING_RATE']),
               loss='categorical_crossentropy',
-              metrics=['categorical_accuracy'])
+              metrics=[top_3_categorical_accuracy])
 
 # Set up training callbacks
 weight_file = "quickdraw_weights.best.hd5"
 checkpoint = ModelCheckpoint(weight_file, verbose=1, save_best_only=True,
                              save_weights_only=True)
-reduceLR = ReduceLROnPlateau(factor=0.8, verbose=1, cooldown=5, min_lr=0.0001)
+reduceLR = ReduceLROnPlateau(factor=0.8, verbose=1, cooldown=3, min_lr=0.0001)
 earlystop = EarlyStopping(patience=10)
+#tensorboard = TensorBoard()
 callbacks = [checkpoint, reduceLR, earlystop]
 
 # Train model
@@ -159,20 +162,18 @@ else:
 model.load_weights(weight_file)
 model.save('full_model.h5')
 
-'''
-# Make prediction
-inputdir = './input'
-test_dicom_dir = '/'.join([inputdir, 'stage_1_test_images'])
 
-sub_df = pd.DataFrame({'path': glob(os.path.join(test_dicom_dir, '*.dcm'))})
-sub_df['patientId'] = sub_df['path'].map(
-    lambda x: os.path.splitext(os.path.basename(x))[0])
+
+# Make prediction
+print('Loading Test Data..')
+
+sub_df = pd.read_csv('img_info_test.csv')
 
 sub_gen = flow_from_dataframe(img_gen, sub_df,
                               path_col='path',
-                              y_col='patientId',
+                              y_col='key_id',
                               target_size=params['IMG_SIZE'],
-                              color_mode='rgb',
+                              color_mode='grayscale',
                               batch_size=params['BATCH_SIZE'],
                               shuffle=False)
 
@@ -185,13 +186,14 @@ for _, (t_x, t_y) in zip(tqdm(range(steps)), sub_gen):
 out_vec = np.concatenate(out_vec, 0)
 out_ids = np.concatenate(out_ids, 0)
 
-pred_df = pd.DataFrame(out_vec, columns=class_enc.classes_)
-pred_df['patientId'] = out_ids
-pred_avg_df = pred_df.groupby('patientId').agg('mean').reset_index()
+out_vec = [sorted(range(len(x)),key=lambda i:x[i])[-1:-4:-1]
+        for x in out_vec]
+out_vec = [" ".join(class_enc.inverse_transform(x)) for x in out_vec]
+print(out_vec)
+
+
+pred_df = pd.DataFrame({"key_id":out_ids,"word":out_vec})
 print("Saving submission..")
-pred_avg_df['PredictionString'] = pred_avg_df['Lung Opacity'].map(
-    lambda x: ('%2.2f 0 0 1024 1024' % x) if x>0.5 else '')
 sub_file = 'submission.csv'
-pred_avg_df[['patientId', 'PredictionString']].to_csv(sub_file, index=False)
-print("Submission saves as",sub_file)
-'''
+pred_df.to_csv(sub_file, index=False)
+print("Submission saved as",sub_file)
