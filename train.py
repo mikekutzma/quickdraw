@@ -174,10 +174,10 @@ sub_gen = flow_from_dataframe(img_gen, sub_df,
                               y_col='key_id',
                               target_size=params['IMG_SIZE'],
                               color_mode='grayscale',
-                              batch_size=params['BATCH_SIZE'],
+                              batch_size=1,
                               shuffle=False)
 
-steps = 2*sub_df.shape[0]//params['BATCH_SIZE']
+steps = len(sub_df)
 out_ids, out_vec = [], []
 print("Making prediction..")
 for _, (t_x, t_y) in zip(tqdm(range(steps)), sub_gen):
