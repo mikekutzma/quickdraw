@@ -168,7 +168,7 @@ model.save('full_model.h5')
 print('Loading Test Data..')
 
 sub_df = pd.read_csv('img_info_test.csv')
-
+print('read test data')
 sub_gen = flow_from_dataframe(img_gen, sub_df,
                               path_col='path',
                               y_col='key_id',
@@ -193,6 +193,7 @@ print(out_vec)
 
 
 pred_df = pd.DataFrame({"key_id":out_ids,"word":out_vec})
+pred_df["key_id"] = pred_df["key_id"].astype(int)
 print("Saving submission..")
 sub_file = 'submission.csv'
 pred_df.to_csv(sub_file, index=False)
